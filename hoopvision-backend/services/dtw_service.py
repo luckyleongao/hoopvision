@@ -13,7 +13,7 @@ def calculate_angle(p1, p2, p3):
         angle = 360.0 - angle
     return angle
 
-def analyze_shot_data(template_id, frames, keyframe_images=None):
+def analyze_shot_data(template_id, frames, keyframe_images=None, release_angle=48.0):
     if not frames:
         return {"error": "No frames provided"}
         
@@ -66,7 +66,8 @@ def analyze_shot_data(template_id, frames, keyframe_images=None):
         min_elbow_angle=float(min_elbow),
         min_knee_angle=float(min_knee),
         template_id=template_id,
-        keyframe_images=keyframe_images or []
+        keyframe_images=keyframe_images or [],
+        release_angle=float(release_angle)
     )
         
     return {
@@ -74,5 +75,7 @@ def analyze_shot_data(template_id, frames, keyframe_images=None):
         "dtw_distance": float(distance),
         "min_elbow_angle": float(min_elbow),
         "min_knee_angle": float(min_knee),
+        "release_angle": float(release_angle),
         "feedback": feedback
     }
+

@@ -16,7 +16,9 @@ data class AnalysisRequest(
     @SerializedName("frames")
     val frames: List<ShotFrame>,
     @SerializedName("keyframe_images_base64")
-    val keyframe_images_base64: List<String> = emptyList()
+    val keyframe_images_base64: List<String> = emptyList(),
+    @SerializedName("release_angle")
+    val release_angle: Float? = null
 )
 
 data class AnalysisResponse(
@@ -24,6 +26,7 @@ data class AnalysisResponse(
     val dtw_distance: Float,
     val min_elbow_angle: Float,
     val min_knee_angle: Float,
+    val release_angle: Float? = null,
     val feedback: String
 )
 

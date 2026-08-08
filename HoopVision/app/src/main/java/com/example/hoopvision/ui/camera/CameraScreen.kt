@@ -28,7 +28,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -110,7 +113,12 @@ fun CameraPreview(modifier: Modifier = Modifier) {
     var shotAnalysis by remember { mutableStateOf(ShotAnalysis()) }
     val shotStateMachine = remember { ShotStateMachine() }
     val poseSmoother = remember { PoseSmoother() }
+    val ballTracker = remember { BallTracker() }
     
+    var parabolaResult by remember { mutableStateOf<ParabolaResult?>(null) }
+    var currentBallPoint by remember { mutableStateOf<BallPoint?>(null) }
+    var trajectoryPoints by remember { mutableStateOf<List<BallPoint>>(emptyList()) }
+
     val coroutineScope = rememberCoroutineScope()
     var isAnalyzing by remember { mutableStateOf(false) }
     var latestResponse by remember { mutableStateOf<AnalysisResponse?>(null) }
@@ -139,6 +147,12 @@ fun CameraPreview(modifier: Modifier = Modifier) {
                     val analysis = shotStateMachine.processFrame(timestamp, smoothed)
                     shotAnalysis = analysis
                     
+                    // Track basketball & fit parabola
+                    val parabola = ballTracker.processFrame(timestamp, analysis.state, smoothed)
+                    parabolaResult = parabola
+                    currentBallPoint = ballTracker.currentBallPoint
+                    trajectoryPoints = ballTracker.getTrajectoryPoints()
+
                     // Capture keyframe image on critical state changes
                     analysis.stateJustChangedTo?.let { newState ->
                         if (newState == ShotState.GATHER) {
@@ -146,6 +160,8 @@ fun CameraPreview(modifier: Modifier = Modifier) {
                             capturedKeyframes.clear()
                             autoDismissJob?.cancel()
                             latestResponse = null
+                            ballTracker.reset()
+                            parabolaResult = null
                         }
                         val base64Img = helper.getLatestFrameBase64()
                         if (base64Img != null) {
@@ -159,6 +175,7 @@ fun CameraPreview(modifier: Modifier = Modifier) {
                         val keyframesToSend = capturedKeyframes.toList()
                         displayedKeyframes = keyframesToSend
                         val currentStarId = selectedStar.id
+                        val measuredReleaseAngle = parabolaResult?.releaseAngleDegrees ?: 48f
                         
                         coroutineScope.launch {
                             try {
@@ -166,14 +183,15 @@ fun CameraPreview(modifier: Modifier = Modifier) {
                                     AnalysisRequest(
                                         template_id = currentStarId,
                                         frames = frames,
-                                        keyframe_images_base64 = keyframesToSend
+                                        keyframe_images_base64 = keyframesToSend,
+                                        release_angle = measuredReleaseAngle
                                     )
                                 )
                                 latestResponse = response
                                 // Real-time Voice Coach Speaking!
                                 ttsManager.speak(response.feedback)
 
-                                // Auto-dismiss sheet after 6 seconds of voice coaching
+                                // Auto-dismiss sheet after 6.5 seconds of voice coaching
                                 autoDismissJob?.cancel()
                                 autoDismissJob = coroutineScope.launch {
                                     delay(6500)
@@ -186,6 +204,7 @@ fun CameraPreview(modifier: Modifier = Modifier) {
                                     dtw_distance = 999f,
                                     min_elbow_angle = shotAnalysis.elbowAngle.toFloat(),
                                     min_knee_angle = shotAnalysis.kneeAngle.toFloat(),
+                                    release_angle = measuredReleaseAngle,
                                     feedback = "分析暂时失败: ${e.message}"
                                 )
                             } finally {
@@ -254,7 +273,7 @@ fun CameraPreview(modifier: Modifier = Modifier) {
             }
         )
         
-        // Skeleton Overlay
+        // Skeleton & Neon Trajectory Overlay
         Canvas(modifier = Modifier.fillMaxSize()) {
             val landmarks = smoothedLandmarks
             if (landmarks != null && landmarks.isNotEmpty() && poseResult != null) {
@@ -270,7 +289,71 @@ fun CameraPreview(modifier: Modifier = Modifier) {
                 val offsetX = (size.width - scaledWidth) / 2f
                 val offsetY = (size.height - scaledHeight) / 2f
 
-                // Draw neon skeleton lines
+                // 1. Draw Neon Basketball Trajectory Parabola
+                val fitted = parabolaResult?.fittedPoints
+                if (!fitted.isNullOrEmpty() && fitted.size >= 2) {
+                    val path = Path()
+                    fitted.forEachIndexed { i, pt ->
+                        val px = pt.first * scaledWidth + offsetX
+                        val py = pt.second * scaledHeight + offsetY
+                        if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                    }
+
+                    // Outer neon glow
+                    drawPath(
+                        path = path,
+                        color = Color(0x6600FFCC),
+                        style = Stroke(width = 12f, cap = StrokeCap.Round)
+                    )
+                    // Inner bright beam
+                    drawPath(
+                        path = path,
+                        brush = Brush.horizontalGradient(
+                            listOf(Color(0xFF38BDF8), Color(0xFF00FFCC), Color(0xFFFBBF24))
+                        ),
+                        style = Stroke(width = 5f, cap = StrokeCap.Round)
+                    )
+                } else if (trajectoryPoints.size >= 2) {
+                    // Fallback to raw points trail
+                    for (i in 0 until trajectoryPoints.size - 1) {
+                        val p1 = trajectoryPoints[i]
+                        val p2 = trajectoryPoints[i + 1]
+                        drawLine(
+                            brush = Brush.horizontalGradient(listOf(Color(0xFF38BDF8), Color(0xFFFBBF24))),
+                            start = Offset(p1.x * scaledWidth + offsetX, p1.y * scaledHeight + offsetY),
+                            end = Offset(p2.x * scaledWidth + offsetX, p2.y * scaledHeight + offsetY),
+                            strokeWidth = 6f,
+                            cap = StrokeCap.Round
+                        )
+                    }
+                }
+
+                // 2. Draw Detected Basketball Glowing Reticle
+                currentBallPoint?.let { ball ->
+                    val bx = ball.x * scaledWidth + offsetX
+                    val by = ball.y * scaledHeight + offsetY
+
+                    // Outer halo
+                    drawCircle(
+                        color = Color(0x55F59E0B),
+                        radius = 24f,
+                        center = Offset(bx, by)
+                    )
+                    // Basketball core
+                    drawCircle(
+                        color = Color(0xFFF59E0B),
+                        radius = 12f,
+                        center = Offset(bx, by)
+                    )
+                    // Center bright spot
+                    drawCircle(
+                        color = Color(0xFFFFFFFF),
+                        radius = 4f,
+                        center = Offset(bx, by)
+                    )
+                }
+
+                // 3. Draw neon skeleton lines
                 PoseLandmarker.POSE_LANDMARKS.forEach { connection ->
                     val start = landmarks[connection.start()]
                     val end = landmarks[connection.end()]
@@ -288,7 +371,7 @@ fun CameraPreview(modifier: Modifier = Modifier) {
                     )
                 }
 
-                // Draw joints
+                // 4. Draw joints
                 for (landmark in landmarks) {
                     val x = landmark.x() * scaledWidth + offsetX
                     val y = landmark.y() * scaledHeight + offsetY
@@ -305,6 +388,7 @@ fun CameraPreview(modifier: Modifier = Modifier) {
         // Top High-Tech Live HUD + Star Archetype Selector
         TopLiveHud(
             shotAnalysis = shotAnalysis,
+            parabolaResult = parabolaResult,
             isAnalyzing = isAnalyzing,
             selectedStar = selectedStar,
             onStarSelected = { selectedStar = it },
@@ -343,11 +427,12 @@ fun CameraPreview(modifier: Modifier = Modifier) {
 }
 
 /**
- * Modern High-Tech Top HUD Bar with Star Selector
+ * Modern High-Tech Top HUD Bar with Star Selector & Parabolic Arc Metrics
  */
 @Composable
 fun TopLiveHud(
     shotAnalysis: ShotAnalysis,
+    parabolaResult: ParabolaResult?,
     isAnalyzing: Boolean,
     selectedStar: StarArchetype,
     onStarSelected: (StarArchetype) -> Unit,
@@ -400,15 +485,15 @@ fun TopLiveHud(
             }
         }
 
-        // Live Action HUD
+        // Live Action HUD with Angle & Trajectory Arc
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(30.dp))
                 .background(Color(0xCC0F172A))
                 .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(30.dp))
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // State Badge
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -423,7 +508,7 @@ fun TopLiveHud(
                     text = stateText,
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
+                    fontSize = 13.sp
                 )
             }
 
@@ -439,7 +524,7 @@ fun TopLiveHud(
             Text(
                 text = "肘: ${shotAnalysis.elbowAngle.toInt()}°",
                 color = if (isElbowGood) Color(0xFF4ADE80) else Color(0xFFFACC15),
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.Medium
             )
 
@@ -447,9 +532,25 @@ fun TopLiveHud(
             Text(
                 text = "膝: ${shotAnalysis.kneeAngle.toInt()}°",
                 color = if (isKneeGood) Color(0xFF4ADE80) else Color(0xFFFACC15),
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.Medium
             )
+
+            // Trajectory Release Angle
+            parabolaResult?.let { arc ->
+                Divider(
+                    color = Color.DarkGray,
+                    modifier = Modifier
+                        .height(14.dp)
+                        .width(1.dp)
+                )
+                Text(
+                    text = "弧: ${arc.releaseAngleDegrees.toInt()}°",
+                    color = if (arc.isGoldenArc) Color(0xFF4ADE80) else Color(0xFF38BDF8),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
 
         if (isAnalyzing) {
@@ -468,7 +569,7 @@ fun TopLiveHud(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "${selectedStar.shortName}流派 · Gemini 视觉诊断中...",
+                    text = "${selectedStar.shortName}流派 · 视觉与轨迹诊断中...",
                     color = Color(0xFFA5B4FC),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold
@@ -612,18 +713,21 @@ fun DiagnosisSheetCard(
                 }
             }
 
-            // Metrics Data Bar
+            // Metrics Data Bar (Elbow, Knee, and Release Trajectory Angle)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color(0x661E293B))
-                    .padding(vertical = 8.dp, horizontal = 12.dp),
+                    .padding(vertical = 8.dp, horizontal = 8.dp),
                 horizontalArrangement = Arrangement.SpaceAround
             ) {
                 MetricItem(label = "托球手肘", value = "${response.min_elbow_angle.toInt()}°", ideal = "标准 90°")
                 Divider(color = Color.DarkGray, modifier = Modifier.height(24.dp).width(1.dp))
                 MetricItem(label = "蓄力膝盖", value = "${response.min_knee_angle.toInt()}°", ideal = "标准 125°")
+                Divider(color = Color.DarkGray, modifier = Modifier.height(24.dp).width(1.dp))
+                val arcVal = response.release_angle?.toInt() ?: 48
+                MetricItem(label = "出手弧度", value = "${arcVal}°", ideal = "黄金 48°")
             }
 
             // AI Coach Feedback Box

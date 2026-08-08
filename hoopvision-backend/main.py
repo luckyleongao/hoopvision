@@ -19,13 +19,15 @@ class ShotAnalysisRequest(BaseModel):
     template_id: str = "standard_shot"
     frames: List[ShotFrame]
     keyframe_images_base64: List[str] = Field(default_factory=list)
+    release_angle: float = 48.0
 
 @app.post("/api/v1/analyze_shot")
 def analyze_shot(request: ShotAnalysisRequest):
     analysis_result = analyze_shot_data(
         request.template_id,
         request.frames,
-        request.keyframe_images_base64
+        request.keyframe_images_base64,
+        request.release_angle
     )
     return analysis_result
 
